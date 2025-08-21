@@ -24,3 +24,9 @@ npm run dev
 ## エンドポイント
 
 - `http://localhost:3000/mcp`(デフォルト設定の場合)
+
+## デバッグ用ツール
+
+```bash
+npx @modelcontextprotocol/inspector
+```
