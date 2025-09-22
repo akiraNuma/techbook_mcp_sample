@@ -12,22 +12,20 @@ export function getMcpServer(): McpServer {
   server.registerTool(
     'get_weather',
     {
-      title: 'Weather Tool',
-      description: 'Gets the current weather information for a specified city.',
+      title: '天気情報ツール',
+      description: '指定した都市の現在の天気情報を取得します。',
       inputSchema: {
-        city: z
-          .string()
-          .describe('The name of the city to get the weather for'),
+        city: z.string().describe('天気を取得する都市名'),
         datetime: z
           .string()
           .optional()
-          .describe('Optional datetime to get the weather for'),
+          .describe('取得する天気の日時(オプション)'),
       },
     },
     (args: { city?: string; datetime?: string }) => {
       const rand = (max: number) => Math.floor(Math.random() * max)
       const { city, datetime } = args
-      const descriptions = ['Sunny', 'Cloudy', 'Rainy', 'Snowy']
+      const descriptions = ['晴れ', '曇り', '雨', '雪']
       const weatherInfo = {
         city,
         temperature: `${15 + rand(20)}°C`,
@@ -54,14 +52,14 @@ export function getMcpServer(): McpServer {
     'status-resource',
     'customscheme://server_status',
     {
-      title: 'Server Status',
-      description: 'Current server status information',
+      title: 'サーバーステータス',
+      description: '現在のサーバーステータス情報',
       mimeType: 'application/json',
     },
     () => {
       const status = {
         timestamp: new Date().toISOString(),
-        status: 'running',
+        status: '稼働中',
       }
 
       return {
