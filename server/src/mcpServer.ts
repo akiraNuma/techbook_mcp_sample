@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { completable } from '@modelcontextprotocol/sdk/server/completable.js'
 import { z } from 'zod'
 
-export function getMcpServer(): McpServer {
+export function createMcpServer(): McpServer {
   const server = new McpServer({
     name: process.env.MCP_SERVER_NAME || 'techbook-mcp-server',
     version: process.env.MCP_SERVER_VERSION || '1.0.0',

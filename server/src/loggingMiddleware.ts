@@ -11,6 +11,10 @@ export const loggingMiddleware = (
     `\n=== ${req.method} ${req.path} - Session: ${sessionId || 'none'} ===`
   )
 
+  // リクエストヘッダーを表示
+  console.log('Request Headers:')
+  console.log(JSON.stringify(req.headers, null, 2))
+
   if (req.body && Object.keys(req.body).length > 0) {
     console.log('Request Body:')
     console.log(JSON.stringify(req.body, null, 2))

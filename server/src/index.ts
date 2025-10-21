@@ -5,10 +5,9 @@ import { randomUUID } from 'crypto'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js'
 import { InMemoryEventStore } from '@modelcontextprotocol/sdk/examples/shared/inMemoryEventStore.js'
-import { getMcpServer } from './mcpServer.js'
+import { createMcpServer } from './mcpServer.js'
 import { loggingMiddleware } from './loggingMiddleware.js'
 
-// Create Express application
 export function createApp(): express.Application {
   const app = express()
 
@@ -19,94 +18,109 @@ export function createApp(): express.Application {
   // CORS設定
   app.use(
     cors({
-      origin: process.env.CORS_ORIGIN || '*', // TODO: change to specific origin in production
-      credentials: process.env.CORS_CREDENTIALS === 'true',
+      origin: process.env.CORS_ORIGIN || '*', // TODO: 本番では特定のドメインに変更してください
       exposedHeaders: ['Mcp-Session-Id'],
       allowedHeaders: [
         'Content-Type',
         'mcp-session-id',
         'mcp-protocol-version',
+        'x-custom-auth-headers', // クライアントサイドから独自の認証ヘッダー等を送信する場合などに追加
       ],
     })
   )
 
   // ルーティング
+  // ルーティングの詳細については以下を参照
+  // https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http
   app.all('/mcp', mcpHandler)
 
   return app
 }
 
-// transportをセッションIDで管理するマップ
+// 各セッションに対応するトランスポートを管理するマップ
 const transports: { [sessionId: string]: StreamableHTTPServerTransport } = {}
 
 // MCPリクエストハンドラー
 const mcpHandler = async (req: Request, res: Response) => {
   try {
-    // SSE無効のため、GETリクエストは405を返す
-    if (req.method === 'GET') {
-      res.status(405).json({
+    // セッション管理の仕組みについては以下を参照
+    // https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#session-management
+    // セッションIDを取得
+    const sessionId = req.headers['mcp-session-id'] as string | undefined
+    let transport: StreamableHTTPServerTransport | undefined
+
+    // 無効なリクエストをチェック
+    if (!sessionId && !isInitializeRequest(req.body)) {
+      // セッションIDがないかつ初期化リクエストでもない場合は無効
+      res.status(400).json({
         jsonrpc: '2.0',
         error: {
           code: -32000,
-          message: 'Method not allowed.',
+          message: 'Bad Request',
         },
         id: null,
       })
       return
     }
 
-    // Check for existing session ID
-    const sessionId = req.headers['mcp-session-id'] as string | undefined
-    let transport: StreamableHTTPServerTransport
-
-    if (sessionId && transports[sessionId]) {
-      // Check if the transport is of the correct type
-      const existingTransport = transports[sessionId]
-      if (existingTransport instanceof StreamableHTTPServerTransport) {
-        // Reuse existing transport
-        transport = existingTransport
-      } else {
-        // Transport exists but is not a StreamableHTTPServerTransport (could be SSEServerTransport)
-        res.status(400).json({
-          jsonrpc: '2.0',
-          error: {
-            code: -32000,
-            message:
-              'Bad Request: Session exists but uses a different transport protocol',
-          },
-          id: null,
-        })
-        return
-      }
-    } else if (
-      !sessionId &&
-      req.method === 'POST' &&
-      isInitializeRequest(req.body)
-    ) {
+    // 新規セッションの処理
+    if (!sessionId && isInitializeRequest(req.body)) {
+      // 新規セッションを開始する場合はトランスポートを新規作成する
       const eventStore = new InMemoryEventStore()
+      // トランスポートインスタンスを作成
       transport = new StreamableHTTPServerTransport({
+        // トランスポートの設定（通信方式の設定）
         sessionIdGenerator: () => randomUUID(),
         eventStore, // Enable resumability
-        enableJsonResponse: true, // JSONレスポンスのみを使用（SSEストリーム無効）
+        enableJsonResponse: false, // SSEストリーム有効化(デフォルトの設定) trueにした場合、通常のJSONレスポンス(application/json)が返る
         onsessioninitialized: (sessionId) => {
-          // Store the transport by session ID when session is initialized
-          transports[sessionId] = transport
+          // セッション初期化時のコールバック
+          // セッションとトランスポートを紐付けて保存する
+          if (transport) {
+            transports[sessionId] = transport
+          }
         },
       })
 
       // Disconnect時の処理
+      // クライアントからセッションを終了するためのDELETEリクエストが来た際に発火する
+      // https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#session-management
+      // TODO: DELETEメソッドのリクエストに紐づけて処理する必要はなく、DELETEメソッドでTransportのoncloseイベントを通るようになっている旨、本で説明
       transport.onclose = () => {
-        const sessionId = transport.sessionId
+        console.log('Transport closed for session:', transport?.sessionId)
+        const sessionId = transport?.sessionId
         if (sessionId && transports[sessionId]) {
+          // セッションに紐づくトランスポートを破棄する
           delete transports[sessionId]
         }
       }
 
-      // Connect the transport to the MCP server
-      const server = getMcpServer()
-      await server.connect(transport)
-    } else {
-      // Invalid request - no session ID or not initialization request
+      // mcpServerクラスをtransportに接続
+      const mcpServer = createMcpServer()
+      await mcpServer.connect(transport)
+    }
+
+    // 既存セッションの処理
+    if (sessionId && transports[sessionId]) {
+      // 既存セッションが存在する場合、保存済みトランスポートを再利用する
+      transport = transports[sessionId]
+    }
+
+    // トランスポートが設定されていない場合
+    if (!transport) {
+      // DELETEリクエストでセッションが終了させようとしている場合
+      if (req.method === 'DELETE') {
+        // 200 OKで応答し穏便に終了させる。要調査
+        console.log('Session ended:', sessionId)
+        // セッションに紐づくトランスポートを破棄する。存在しないはずだが念の為
+        if (sessionId && transports[sessionId]) {
+          delete transports[sessionId]
+        }
+        res.send(200)
+        return
+      }
+
+      // エラーとして応答
       res.status(400).json({
         jsonrpc: '2.0',
         error: {
@@ -117,7 +131,8 @@ const mcpHandler = async (req: Request, res: Response) => {
       })
       return
     }
-    // Handle the request with the transport
+
+    // トランスポートでリクエストを処理する
     await transport.handleRequest(req, res, req.body)
   } catch (error) {
     console.error('Error handling MCP request:', error)
@@ -147,7 +162,7 @@ export function startServer() {
     console.log(`MCP endpoint available at: http://localhost:${PORT}/mcp`)
   })
 
-  // Graceful shutdown handling
+  // Graceful shutdown
   const gracefulShutdown = async (signal: string) => {
     console.log(`\nReceived ${signal}. Shutting down gracefully...`)
 
